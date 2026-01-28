@@ -66,9 +66,6 @@ Run the app while Ollama is running:
 flutter run -d macos
 ```
 
-flutter run -d macos
-```
-
 ## 💡 Usage
 
 ### Adding Documents
