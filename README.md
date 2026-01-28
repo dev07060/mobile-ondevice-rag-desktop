@@ -1,12 +1,13 @@
-# Local Gemma macOS
+# Local RAG Desktop Sample
 
 [🇰🇷 한국어 (Korean)](README_ko.md)
 
-RAG (Retrieval-Augmented Generation) + Ollama LLM integration application running locally on macOS.
+RAG (Retrieval-Augmented Generation) + Ollama LLM integration application running locally on Desktop.
 
 ## 📋 Requirements
 
 - **macOS** (Apple Silicon or Intel)
+- **Windows** (Coming Soon 🚧)
 - **Flutter** 3.9.0 or higher
 - **Dart SDK** 3.9.2 or higher
 - **Ollama** (for running local LLM)

@@ -1,5 +1,5 @@
 name: local_gemma_macos
-description: RAG + Ollama LLM integration for macOS
+description: RAG + Ollama LLM integration for Desktop
 
 publish_to: none
 
