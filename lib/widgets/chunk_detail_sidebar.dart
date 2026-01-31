@@ -1,8 +1,6 @@
 /// Sidebar widget displaying RAG chunk details with auto-scroll to selected item.
-
-import 'package:flutter/material.dart';
 import 'package:mobile_rag_engine/mobile_rag_engine.dart';
-import 'package:mobile_rag_engine/src/rust/api/source_rag.dart';
+import 'package:flutter/material.dart';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 
 /// Obsidian-style chunk detail sidebar with auto-scroll to selected chunk

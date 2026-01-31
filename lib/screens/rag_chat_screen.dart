@@ -3,7 +3,6 @@
 
 import 'package:flutter/material.dart';
 import 'package:mobile_rag_engine/mobile_rag_engine.dart';
-import 'package:mobile_rag_engine/src/rust/api/source_rag.dart';
 import 'package:ollama_dart/ollama_dart.dart';
 
 import 'package:local_gemma_macos/services/topic_suggestion_service.dart';
@@ -66,6 +65,7 @@ class _RagChatScreenState extends State<RagChatScreen> {
   bool _showGraphPanel = true;
   bool _isSuggestionsExpanded = true;
   int _compressionLevel = 1;
+  ResponseLanguage _responseLanguage = ResponseLanguage.english;
   final double _minSimilarityThreshold = 0.35;
 
   // Graph panel state
@@ -168,6 +168,7 @@ class _RagChatScreenState extends State<RagChatScreen> {
         ollamaClient: _ollamaClient,
         modelName: widget.modelName,
         maxSuggestions: 3,
+        language: _responseLanguage,
       );
 
       if (mounted) {
@@ -256,6 +257,7 @@ class _RagChatScreenState extends State<RagChatScreen> {
       final result = await _chatService!.processMessage(
         text,
         parsedIntent,
+        language: _responseLanguage,
         onToken: (token) {
           if (mounted && _messages.isNotEmpty) {
             setState(() {
@@ -337,6 +339,18 @@ class _RagChatScreenState extends State<RagChatScreen> {
     switch (action) {
       case RagChatMenuAction.newChat:
         _startNewChat();
+        break;
+      case RagChatMenuAction.languageEnglish:
+        setState(() {
+          _responseLanguage = ResponseLanguage.english;
+          _generateTopicSuggestions(); // Regenerate suggestions
+        });
+        break;
+      case RagChatMenuAction.languageKorean:
+        setState(() {
+          _responseLanguage = ResponseLanguage.korean;
+          _generateTopicSuggestions(); // Regenerate suggestions
+        });
         break;
       case RagChatMenuAction.compression0:
         setState(() => _compressionLevel = 0);
@@ -448,6 +462,7 @@ class _RagChatScreenState extends State<RagChatScreen> {
       appBar: RagChatAppBar(
         showGraphPanel: _showGraphPanel,
         showDebugInfo: _showDebugInfo,
+        language: _responseLanguage,
         compressionLevel: _compressionLevel,
         onToggleGraph: () => setState(() => _showGraphPanel = !_showGraphPanel),
         onToggleDebug: () => setState(() => _showDebugInfo = !_showDebugInfo),

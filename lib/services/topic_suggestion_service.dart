@@ -7,6 +7,7 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:mobile_rag_engine/mobile_rag_engine.dart';
 import 'package:mobile_rag_engine/src/rust/api/source_rag.dart';
+import 'package:local_gemma_macos/services/ollama_response_service.dart';
 import 'package:ollama_dart/ollama_dart.dart';
 
 /// A suggested question with its source topic and validation score
@@ -75,6 +76,7 @@ class TopicSuggestionService {
     String? modelName,
     int maxSuggestions = 3,
     int sampleSize = 15,
+    ResponseLanguage language = ResponseLanguage.english,
   }) async {
     // Return cached if available
     final cached = getCachedSuggestions();
@@ -117,11 +119,12 @@ class TopicSuggestionService {
         modelName: modelName,
         sampleText: sampleText,
         maxSuggestions: candidateCount,
+        language: language,
       );
 
       debugPrint('📝 Generated ${candidates.length} candidate questions');
 
-      // 5. Validate each question with RAG search
+      // 5. Validate each question with RAG search (Validation uses original query, so language doesn't matter for similarity check)
       final validatedSuggestions = await _validateQuestions(
         candidates: candidates,
         ragService: ragService,
@@ -240,6 +243,7 @@ class TopicSuggestionService {
     String? modelName,
     required String sampleText,
     required int maxSuggestions,
+    required ResponseLanguage language,
   }) async {
     // Truncate sample text if too long (keep within context window)
     final truncatedText = sampleText.length > 4000
@@ -255,8 +259,30 @@ class TopicSuggestionService {
     debugPrint(truncatedText);
     debugPrint('=' * 70);
 
-    final prompt =
-        '''Below is a sample of documents stored in the knowledge base.
+    final String prompt;
+    if (language == ResponseLanguage.korean) {
+      prompt =
+          '''Below is a sample of documents stored in the knowledge base.
+Analyze this content and generate $maxSuggestions useful questions that a user might ask.
+
+Rules:
+1. Questions must be directly answerable from the documents below.
+2. Ask about facts, data, and concepts explicitly mentioned in the documents.
+3. Avoid questions that require external information not in the documents.
+4. Keep questions concise (1-2 sentences).
+5. Write questions in Korean (한국어).
+
+Document sample:
+$truncatedText
+
+Respond ONLY in JSON format:
+[
+  {"topic": "주제1", "question": "질문1?"},
+  {"topic": "주제2", "question": "질문2?"}
+]''';
+    } else {
+      prompt =
+          '''Below is a sample of documents stored in the knowledge base.
 Analyze this content and generate $maxSuggestions useful questions that a user might ask.
 
 Rules:
@@ -274,6 +300,7 @@ Respond ONLY in JSON format:
   {"topic": "Topic1", "question": "Question1?"},
   {"topic": "Topic2", "question": "Question2?"}
 ]''';
+    }
 
     try {
       final response = await ollamaClient.generateCompletion(

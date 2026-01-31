@@ -1,4 +1,5 @@
 /// Screen for downloading and managing Ollama LLM models.
+library;
 
 import 'package:flutter/material.dart';
 import 'package:ollama_dart/ollama_dart.dart';
