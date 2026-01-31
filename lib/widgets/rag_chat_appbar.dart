@@ -2,14 +2,23 @@
 /// Contains graph toggle, debug toggle, and settings menu.
 
 import 'package:flutter/material.dart';
+import 'package:local_gemma_macos/services/ollama_response_service.dart';
 
 /// Actions that can be triggered from the AppBar menu
-enum RagChatMenuAction { newChat, compression0, compression1, compression2 }
+enum RagChatMenuAction {
+  newChat,
+  languageEnglish,
+  languageKorean,
+  compression0,
+  compression1,
+  compression2,
+}
 
 /// AppBar for RAG Chat screen with settings and toggles
 class RagChatAppBar extends StatelessWidget implements PreferredSizeWidget {
   final bool showGraphPanel;
   final bool showDebugInfo;
+  final ResponseLanguage language;
   final int compressionLevel;
   final VoidCallback onToggleGraph;
   final VoidCallback onToggleDebug;
@@ -19,6 +28,7 @@ class RagChatAppBar extends StatelessWidget implements PreferredSizeWidget {
     super.key,
     required this.showGraphPanel,
     required this.showDebugInfo,
+    required this.language,
     required this.compressionLevel,
     required this.onToggleGraph,
     required this.onToggleDebug,
@@ -71,6 +81,49 @@ class RagChatAppBar extends StatelessWidget implements PreferredSizeWidget {
             leading: Icon(Icons.refresh),
             title: Text('New Chat'),
             subtitle: Text('Clear chat history'),
+            contentPadding: EdgeInsets.zero,
+          ),
+        ),
+        const PopupMenuDivider(),
+
+        // Language section
+        PopupMenuItem(
+          enabled: false,
+          child: Text(
+            'Language',
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              color: Colors.grey[600],
+            ),
+          ),
+        ),
+        PopupMenuItem(
+          value: RagChatMenuAction.languageEnglish,
+          child: ListTile(
+            leading: Icon(
+              language == ResponseLanguage.english
+                  ? Icons.radio_button_checked
+                  : Icons.radio_button_unchecked,
+              color: language == ResponseLanguage.english
+                  ? Theme.of(context).colorScheme.primary
+                  : null,
+            ),
+            title: const Text('English'),
+            contentPadding: EdgeInsets.zero,
+          ),
+        ),
+        PopupMenuItem(
+          value: RagChatMenuAction.languageKorean,
+          child: ListTile(
+            leading: Icon(
+              language == ResponseLanguage.korean
+                  ? Icons.radio_button_checked
+                  : Icons.radio_button_unchecked,
+              color: language == ResponseLanguage.korean
+                  ? Theme.of(context).colorScheme.primary
+                  : null,
+            ),
+            title: const Text('한국어'),
             contentPadding: EdgeInsets.zero,
           ),
         ),

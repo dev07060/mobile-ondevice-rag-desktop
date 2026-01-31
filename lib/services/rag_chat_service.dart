@@ -3,10 +3,8 @@
 
 import 'package:flutter/foundation.dart';
 import 'package:mobile_rag_engine/mobile_rag_engine.dart';
-import 'package:mobile_rag_engine/src/rust/api/source_rag.dart';
-import 'package:mobile_rag_engine/src/rust/api/user_intent.dart' as intent;
+import 'package:mobile_rag_engine/mobile_rag_engine.dart' as intent;
 import 'package:ollama_dart/ollama_dart.dart';
-
 import 'query_understanding_service.dart';
 import 'ollama_response_service.dart';
 import 'query_intent_handler.dart';
@@ -132,6 +130,7 @@ class RagChatService {
   Future<ChatProcessResult> processMessage(
     String text,
     ParsedMessageIntent parsedIntent, {
+    ResponseLanguage language = ResponseLanguage.english,
     void Function(String token)? onToken,
   }) async {
     final totalStopwatch = Stopwatch()..start();
@@ -238,6 +237,7 @@ class RagChatService {
         hasRelevantContext ? contextText : '',
         ragResult,
         hasRelevantContext,
+        language: language,
         onToken: onToken,
       );
     }
@@ -288,6 +288,7 @@ class RagChatService {
     String contextText,
     RagSearchResult ragResult,
     bool hasRelevantContext, {
+    ResponseLanguage language = ResponseLanguage.english,
     void Function(String token)? onToken,
   }) async {
     final result = await responseService.generateResponse(
@@ -296,6 +297,7 @@ class RagChatService {
       ragResult: ragResult,
       hasRelevantContext: hasRelevantContext,
       chatHistory: chatHistory,
+      language: language,
       onHistoryUpdate: (message) => chatHistory.add(message),
       onToken: onToken,
     );

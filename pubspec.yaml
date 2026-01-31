@@ -10,7 +10,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  mobile_rag_engine: ^0.7.0
+  mobile_rag_engine: ^0.7.8
   ollama_dart: ^0.3.0+1
   path_provider: ^2.1.5
   flutter_rust_bridge: ^2.0.0
@@ -29,3 +29,7 @@ flutter:
   uses-material-design: true
   assets:
     - assets/
+
+dependency_overrides:
+  mobile_rag_engine:
+    path: ../../pub_package/mobile_rag_engine

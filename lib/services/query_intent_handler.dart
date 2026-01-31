@@ -1,6 +1,5 @@
 /// Handles slash command intents and RAG parameter configuration.
-
-import 'package:mobile_rag_engine/src/rust/api/user_intent.dart';
+import 'package:mobile_rag_engine/mobile_rag_engine.dart';
 
 /// Intent-specific configuration for RAG and LLM
 class IntentConfig {
