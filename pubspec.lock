@@ -286,7 +286,7 @@ packages:
       path: "../../pub_package/mobile_rag_engine"
       relative: true
     source: path
-    version: "0.7.8"
+    version: "0.9.2"
   nested:
     dependency: transitive
     description:
@@ -411,10 +411,10 @@ packages:
     dependency: transitive
     description:
       name: rag_engine_flutter
-      sha256: c2e6d5761da19ede8e6abdc35da1c3bbd64fc40151f4c5e31f47546b6d8d9e16
+      sha256: d89187834d25789a11b3b93f34152e103ab05fe7497f4468826a0383a034a722
       url: "https://pub.dev"
     source: hosted
-    version: "0.7.6"
+    version: "0.9.0"
   scrollable_positioned_list:
     dependency: "direct main"
     description:
