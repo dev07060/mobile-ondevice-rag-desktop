@@ -6,7 +6,6 @@ import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:mobile_rag_engine/mobile_rag_engine.dart';
-import 'package:mobile_rag_engine/src/rust/api/source_rag.dart';
 import 'package:local_gemma_macos/services/ollama_response_service.dart';
 import 'package:ollama_dart/ollama_dart.dart';
 

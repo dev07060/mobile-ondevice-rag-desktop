@@ -23,6 +23,7 @@ Future<void> main() async {
     tokenizerAsset: AppConfig.tokenizerAsset,
     modelAsset: AppConfig.modelAsset,
     databaseName: AppConfig.databaseName,
+    threadLevel: ThreadUseLevel.high,
   );
 
   runApp(const LocalGemmaApp());

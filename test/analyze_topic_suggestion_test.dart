@@ -6,7 +6,6 @@
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:mobile_rag_engine/mobile_rag_engine.dart';
-import 'package:mobile_rag_engine/src/rust/api/source_rag.dart';
 import 'package:ollama_dart/ollama_dart.dart';
 
 /// Run analysis to understand topic suggestion failures
