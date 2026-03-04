@@ -5,26 +5,39 @@ import 'package:flutter/material.dart';
 import 'package:mobile_rag_engine/mobile_rag_engine.dart';
 import 'package:ollama_dart/ollama_dart.dart';
 
-import 'package:local_gemma_macos/services/topic_suggestion_service.dart';
-import 'package:local_gemma_macos/services/query_understanding_service.dart';
-import 'package:local_gemma_macos/services/ollama_response_service.dart';
-import 'package:local_gemma_macos/services/rag_chat_service.dart';
-import 'package:local_gemma_macos/services/document_add_service.dart';
 import 'package:local_gemma_macos/models/chat_models.dart';
-import 'package:local_gemma_macos/widgets/knowledge_graph_panel.dart';
-import 'package:local_gemma_macos/widgets/chunk_detail_sidebar.dart';
-import 'package:local_gemma_macos/widgets/suggestion_chips.dart';
-import 'package:local_gemma_macos/widgets/chat_input_area.dart';
-import 'package:local_gemma_macos/widgets/slash_command_overlay.dart';
-import 'package:local_gemma_macos/widgets/document_style_response.dart';
-import 'package:local_gemma_macos/widgets/rag_chat_appbar.dart';
+import 'package:local_gemma_macos/models/notebook_chat_session.dart';
+import 'package:local_gemma_macos/models/notebook_models.dart';
+import 'package:local_gemma_macos/services/document_add_service.dart';
+import 'package:local_gemma_macos/services/notebook_chat_session_store.dart';
+import 'package:local_gemma_macos/services/notebook_rag_service.dart';
+import 'package:local_gemma_macos/services/notebook_warmup_coordinator.dart';
+import 'package:local_gemma_macos/services/ollama_response_service.dart';
+import 'package:local_gemma_macos/services/query_understanding_service.dart';
+import 'package:local_gemma_macos/services/rag_chat_service.dart';
+import 'package:local_gemma_macos/services/topic_suggestion_service.dart';
 import 'package:local_gemma_macos/widgets/add_document_dialog.dart';
+import 'package:local_gemma_macos/widgets/chat_input_area.dart';
+import 'package:local_gemma_macos/widgets/chunk_detail_sidebar.dart';
+import 'package:local_gemma_macos/widgets/document_style_response.dart';
+import 'package:local_gemma_macos/widgets/knowledge_graph_panel.dart';
+import 'package:local_gemma_macos/widgets/rag_chat_appbar.dart';
+import 'package:local_gemma_macos/widgets/slash_command_overlay.dart';
+import 'package:local_gemma_macos/widgets/suggestion_chips.dart';
 
 class RagChatScreen extends StatefulWidget {
+  final NotebookModel notebook;
+  final NotebookChatSessionStore sessionStore;
   final bool mockLlm;
   final String? modelName;
 
-  const RagChatScreen({super.key, this.mockLlm = false, this.modelName});
+  const RagChatScreen({
+    super.key,
+    required this.notebook,
+    required this.sessionStore,
+    this.mockLlm = false,
+    this.modelName,
+  });
 
   @override
   State<RagChatScreen> createState() => _RagChatScreenState();
@@ -36,16 +49,23 @@ class _RagChatScreenState extends State<RagChatScreen> {
   final ScrollController _scrollController = ScrollController();
   final FocusNode _focusNode = FocusNode();
 
+  // Notebook context
+  late NotebookModel _notebook;
+  NotebookChatSession? _session;
+  Set<String> _selectedCollectionIds = <String>{};
+
   // Messages
-  final List<ChatMessage> _messages = [];
+  List<ChatMessage> _messages = <ChatMessage>[];
 
   // Services
   RagChatService? _chatService;
   DocumentAddService? _documentService;
   QueryUnderstandingService? _queryService;
   OllamaResponseService? _ollamaResponseService;
+  NotebookWarmupCoordinator? _warmupCoordinator;
+  NotebookRagService? _notebookRagService;
   final OllamaClient _ollamaClient = OllamaClient();
-  final List<Message> _chatHistory = [];
+  List<Message> _chatHistory = <Message>[];
 
   // Topic suggestions
   final TopicSuggestionService _topicService = TopicSuggestionService();
@@ -62,7 +82,7 @@ class _RagChatScreenState extends State<RagChatScreen> {
 
   // Settings
   bool _showDebugInfo = true;
-  bool _showGraphPanel = true;
+  bool _showGraphPanel = false;
   bool _isSuggestionsExpanded = true;
   int _compressionLevel = 1;
   ResponseLanguage _responseLanguage = ResponseLanguage.english;
@@ -72,7 +92,6 @@ class _RagChatScreenState extends State<RagChatScreen> {
   ChunkSearchResult? _selectedChunk;
   String? _lastQuery;
   List<ChunkSearchResult> _lastChunks = [];
-  int? _activeGraphMessageIndex;
 
   // Slash command state
   bool _showSlashPopup = false;
@@ -81,10 +100,26 @@ class _RagChatScreenState extends State<RagChatScreen> {
   SlashCommand? _selectedSlashCommand;
   int _slashSelectedIndex = 0;
 
+  Set<String> get _allNotebookCollectionIds =>
+      _notebook.categories.map((category) => category.collectionId).toSet();
+
   @override
   void initState() {
     super.initState();
+    _notebook = widget.notebook;
     _initialize();
+  }
+
+  void _persistSession() {
+    final notebookId = _notebook.id;
+    widget.sessionStore.save(
+      NotebookChatSession(
+        notebookId: notebookId,
+        messages: List<ChatMessage>.from(_messages),
+        chatHistory: List<Message>.from(_chatHistory),
+        selectedCollectionIds: Set<String>.from(_selectedCollectionIds),
+      ),
+    );
   }
 
   Future<void> _initialize() async {
@@ -94,10 +129,27 @@ class _RagChatScreenState extends State<RagChatScreen> {
     });
 
     try {
-      // Use the globally initialized MobileRag singleton
       final ragEngine = MobileRag.instance.engine;
+      _notebookRagService = NotebookRagService(ragEngine: ragEngine);
+      _warmupCoordinator = NotebookWarmupCoordinator(ragEngine: ragEngine);
 
-      // Initialize services
+      _session = widget.sessionStore.getOrCreate(
+        notebookId: _notebook.id,
+        initialSelectedCollectionIds: _allNotebookCollectionIds,
+      );
+
+      _messages = _session!.messages;
+      _chatHistory = _session!.chatHistory;
+
+      final validStoredSelection = _session!.selectedCollectionIds
+          .where(
+            (collectionId) => _allNotebookCollectionIds.contains(collectionId),
+          )
+          .toSet();
+      _selectedCollectionIds = validStoredSelection.isEmpty
+          ? _allNotebookCollectionIds
+          : validStoredSelection;
+
       _queryService = QueryUnderstandingService(
         ollamaClient: _ollamaClient,
         modelName: widget.modelName,
@@ -113,6 +165,7 @@ class _RagChatScreenState extends State<RagChatScreen> {
         ollamaClient: _ollamaClient,
         queryService: _queryService!,
         responseService: _ollamaResponseService!,
+        notebookRagService: _notebookRagService,
         chatHistory: _chatHistory,
         minSimilarityThreshold: _minSimilarityThreshold,
         mockLlm: widget.mockLlm,
@@ -120,29 +173,36 @@ class _RagChatScreenState extends State<RagChatScreen> {
 
       _documentService = DocumentAddService(ragEngine: ragEngine);
 
-      // Get stats
-      final stats = await ragEngine.getStats();
-      _totalSources = stats.sourceCount.toInt();
-      _totalChunks = stats.chunkCount.toInt();
+      final stats = await _documentService!.getStats(
+        collectionIds: _allNotebookCollectionIds.toList(growable: false),
+      );
+      _totalSources = stats.sources;
+      _totalChunks = stats.chunks;
+
+      _warmupCoordinator?.primeInBackground(_selectedCollectionIds);
 
       setState(() {
         _isInitialized = true;
         _isLoading = false;
-        _status = 'Ready! Sources: $_totalSources, Chunks: $_totalChunks';
+        _status =
+            'Ready: ${_notebook.title} · Sources $_totalSources · Chunks $_totalChunks';
       });
 
-      // Add welcome message
-      _addSystemMessage(
-        'Welcome! I can answer questions based on the documents you add.\n\n'
-        '• Use the 📎 button to add documents\n'
-        '• Ask me questions about the documents\n'
-        '• ${widget.mockLlm ? "(Mock mode - no LLM)" : "Using Ollama: ${widget.modelName ?? 'default'}"}',
-      );
+      if (_messages.isEmpty) {
+        _addSystemMessage(
+          'Notebook: ${_notebook.title}\n'
+          'Selected collections: ${_selectedCollectionIds.length}/${_allNotebookCollectionIds.length}\n\n'
+          '• Use the 📎 button to add documents (default collection)\n'
+          '• Ask questions across selected collections\n'
+          '• ${widget.mockLlm ? "(Mock mode - no LLM)" : "Using Ollama: ${widget.modelName ?? 'default'}"}',
+        );
+      }
 
-      // Generate topic suggestions if we have documents
       if (_totalChunks > 0 && !widget.mockLlm) {
         _generateTopicSuggestions();
       }
+
+      _persistSession();
     } catch (e) {
       setState(() {
         _isLoading = false;
@@ -155,6 +215,7 @@ class _RagChatScreenState extends State<RagChatScreen> {
     setState(() {
       _messages.insert(0, ChatMessage(content: content, isUser: false));
     });
+    _persistSession();
   }
 
   Future<void> _generateTopicSuggestions() async {
@@ -164,7 +225,8 @@ class _RagChatScreenState extends State<RagChatScreen> {
 
     try {
       final suggestions = await _topicService.generateSuggestions(
-        ragService: MobileRag.instance.engine.service,
+        ragEngine: MobileRag.instance.engine,
+        collectionIds: _selectedCollectionIds.toList(growable: false),
         ollamaClient: _ollamaClient,
         modelName: widget.modelName,
         maxSuggestions: 3,
@@ -202,22 +264,25 @@ class _RagChatScreenState extends State<RagChatScreen> {
   Future<void> _sendMessage() async {
     final text = _messageController.text.trim();
     if (text.isEmpty || !_isInitialized || _isGenerating) return;
+    if (_selectedCollectionIds.isEmpty) {
+      setState(() => _status = 'Select at least one collection to query.');
+      return;
+    }
 
     _messageController.clear();
     _focusNode.unfocus();
 
-    // Parse intent
+    await _warmupCoordinator?.ensureReady(_selectedCollectionIds);
+
     final parsedIntent = _chatService!.parseIntent(
       text,
       selectedCommand: _selectedSlashCommand,
     );
 
-    // Clear selected command
     if (_selectedSlashCommand != null) {
       setState(() => _selectedSlashCommand = null);
     }
 
-    // Handle invalid slash commands
     if (!parsedIntent.parsed.isValid && text.startsWith('/')) {
       setState(() {
         _messages.insert(
@@ -233,10 +298,10 @@ class _RagChatScreenState extends State<RagChatScreen> {
           ),
         );
       });
+      _persistSession();
       return;
     }
 
-    // Add user message and empty AI response box
     setState(() {
       _messages.insert(
         0,
@@ -253,10 +318,10 @@ class _RagChatScreenState extends State<RagChatScreen> {
     });
 
     try {
-      // Process message using chat service
       final result = await _chatService!.processMessage(
         text,
         parsedIntent,
+        collectionIds: _selectedCollectionIds.toList(growable: false),
         language: _responseLanguage,
         onToken: (token) {
           if (mounted && _messages.isNotEmpty) {
@@ -267,7 +332,6 @@ class _RagChatScreenState extends State<RagChatScreen> {
         },
       );
 
-      // Update message with result
       if (mounted && _messages.isNotEmpty) {
         setState(() {
           _lastQuery = text;
@@ -298,6 +362,7 @@ class _RagChatScreenState extends State<RagChatScreen> {
       });
     } finally {
       setState(() => _isGenerating = false);
+      _persistSession();
     }
 
     _scrollToBottom();
@@ -313,14 +378,17 @@ class _RagChatScreenState extends State<RagChatScreen> {
 
     setState(() {
       _messages.clear();
+      _chatHistory.clear();
       _isLoading = false;
-      _status = 'Ready! Sources: $_totalSources, Chunks: $_totalChunks';
+      _status =
+          'Ready: ${_notebook.title} · Sources $_totalSources · Chunks $_totalChunks';
     });
 
     _addSystemMessage(
-      '🔄 New chat started! Chat history has been cleared.\n\n'
-      '• Ask me questions about your documents',
+      '🔄 New chat started in ${_notebook.title}.\n\n'
+      '• Ask questions about selected collections',
     );
+    _persistSession();
   }
 
   void _scrollToBottom() {
@@ -343,13 +411,13 @@ class _RagChatScreenState extends State<RagChatScreen> {
       case RagChatMenuAction.languageEnglish:
         setState(() {
           _responseLanguage = ResponseLanguage.english;
-          _generateTopicSuggestions(); // Regenerate suggestions
+          _generateTopicSuggestions();
         });
         break;
       case RagChatMenuAction.languageKorean:
         setState(() {
           _responseLanguage = ResponseLanguage.korean;
-          _generateTopicSuggestions(); // Regenerate suggestions
+          _generateTopicSuggestions();
         });
         break;
       case RagChatMenuAction.compression0:
@@ -370,21 +438,24 @@ class _RagChatScreenState extends State<RagChatScreen> {
     final result = await showAddDocumentDialog(
       context: context,
       documentService: _documentService!,
+      collectionId: _notebook.defaultCollectionId,
     );
 
     if (result != null && result.success) {
-      final stats = await _documentService!.getStats();
+      final stats = await _documentService!.getStats(
+        collectionIds: _allNotebookCollectionIds.toList(growable: false),
+      );
       setState(() {
         _totalSources = stats.sources;
         _totalChunks = stats.chunks;
         _status = result.fileName != null
-            ? '${result.fileName} added! Chunks: ${result.chunkCount}'
+            ? '${result.fileName} added to ${_notebook.defaultCollectionId}! Chunks: ${result.chunkCount}'
             : 'Document added! Chunks: ${result.chunkCount}';
       });
 
       _addSystemMessage(
         result.fileName != null
-            ? '✅ ${result.fileName} added. (${result.chunkCount} chunks)'
+            ? '✅ ${result.fileName} added to ${_notebook.defaultCollectionId} (${result.chunkCount} chunks).'
             : '✅ Document added with ${result.chunkCount} chunks.',
       );
 
@@ -395,7 +466,6 @@ class _RagChatScreenState extends State<RagChatScreen> {
     }
   }
 
-  // Slash command handlers
   void _onSlashCommandSelected(SlashCommand command) {
     setState(() {
       _showSlashPopup = false;
@@ -446,13 +516,69 @@ class _RagChatScreenState extends State<RagChatScreen> {
     _onSlashCommandSelected(commands[index]);
   }
 
-  String? _getQueryForMessage(int aiMessageIndex) {
-    for (var i = aiMessageIndex + 1; i < _messages.length; i++) {
-      if (_messages[i].isUser) {
-        return _messages[i].content;
+  void _toggleCollection(String collectionId, bool selected) {
+    final nextSelection = Set<String>.from(_selectedCollectionIds);
+    if (selected) {
+      nextSelection.add(collectionId);
+    } else {
+      if (nextSelection.length == 1 && nextSelection.contains(collectionId)) {
+        return;
       }
+      nextSelection.remove(collectionId);
     }
-    return null;
+
+    setState(() {
+      _selectedCollectionIds = nextSelection;
+      _status =
+          'Selected collections: ${_selectedCollectionIds.length}/${_allNotebookCollectionIds.length}';
+    });
+
+    _warmupCoordinator?.primeInBackground(_selectedCollectionIds);
+    _topicService.invalidateCache();
+    _generateTopicSuggestions();
+    _persistSession();
+  }
+
+  Widget _buildCollectionScopeBar() {
+    final categories = _notebook.categories;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
+      color: const Color(0xFF171A20),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: [
+          FilterChip(
+            selected:
+                _selectedCollectionIds.length ==
+                _allNotebookCollectionIds.length,
+            label: const Text('All Categories'),
+            onSelected: (_) {
+              setState(() {
+                _selectedCollectionIds = _allNotebookCollectionIds;
+              });
+              _warmupCoordinator?.primeInBackground(_selectedCollectionIds);
+              _topicService.invalidateCache();
+              _generateTopicSuggestions();
+              _persistSession();
+            },
+          ),
+          ...categories.map((category) {
+            final selected = _selectedCollectionIds.contains(
+              category.collectionId,
+            );
+            return FilterChip(
+              selected: selected,
+              label: Text(_displayCategoryLabel(category)),
+              onSelected: (value) =>
+                  _toggleCollection(category.collectionId, value),
+            );
+          }),
+        ],
+      ),
+    );
   }
 
   @override
@@ -460,6 +586,7 @@ class _RagChatScreenState extends State<RagChatScreen> {
     return Scaffold(
       backgroundColor: const Color(0xFF121212),
       appBar: RagChatAppBar(
+        title: '${_notebook.emoji} ${_notebook.title}',
         showGraphPanel: _showGraphPanel,
         showDebugInfo: _showDebugInfo,
         language: _responseLanguage,
@@ -470,7 +597,6 @@ class _RagChatScreenState extends State<RagChatScreen> {
       ),
       body: Row(
         children: [
-          // Left: Chat area
           Expanded(
             flex: 5,
             child: Container(
@@ -479,10 +605,8 @@ class _RagChatScreenState extends State<RagChatScreen> {
                 children: [
                   Column(
                     children: [
-                      // Status bar
                       if (_showDebugInfo) _buildStatusBar(),
-
-                      // Suggestion chips
+                      _buildCollectionScopeBar(),
                       SuggestionChipsPanel(
                         suggestions: _suggestedQuestions,
                         isLoading: _isLoadingSuggestions,
@@ -498,15 +622,10 @@ class _RagChatScreenState extends State<RagChatScreen> {
                         },
                         onQuestionSelected: _sendSuggestedQuestion,
                       ),
-
-                      // Messages
                       Expanded(child: _buildMessageList()),
-
-                      // Input area
                       _buildInputArea(),
                     ],
                   ),
-                  // Slash command overlay
                   if (_showSlashPopup)
                     Positioned(
                       left: 60,
@@ -523,11 +642,7 @@ class _RagChatScreenState extends State<RagChatScreen> {
               ),
             ),
           ),
-
-          // Divider
           if (_showGraphPanel) Container(width: 1, color: Colors.grey[800]),
-
-          // Middle: Graph panel
           if (_showGraphPanel)
             Expanded(
               flex: 4,
@@ -542,11 +657,7 @@ class _RagChatScreenState extends State<RagChatScreen> {
                 },
               ),
             ),
-
-          // Divider
           if (_showGraphPanel) Container(width: 1, color: Colors.grey[800]),
-
-          // Right: Chunk detail sidebar
           if (_showGraphPanel)
             Expanded(
               flex: 2,
@@ -591,7 +702,7 @@ class _RagChatScreenState extends State<RagChatScreen> {
             ),
           ),
           Text(
-            '📄$_totalSources 📦$_totalChunks',
+            '${_notebook.emoji} ${_selectedCollectionIds.length}/${_allNotebookCollectionIds.length} • 📄$_totalSources 📦$_totalChunks',
             style: const TextStyle(fontSize: 12, color: Colors.white70),
           ),
         ],
@@ -653,37 +764,30 @@ class _RagChatScreenState extends State<RagChatScreen> {
         final message = _messages[index];
         if (message.isUser) {
           return UserMessageBubble(message: message);
-        } else {
-          return DocumentStyleResponse(
-            message: message,
-            showDebugInfo: _showDebugInfo,
-            isGraphActive: _showGraphPanel && _activeGraphMessageIndex == index,
-            shouldAnimate: index == 0 && !_isGenerating,
-            onViewGraph:
-                message.retrievedChunks != null &&
-                    message.retrievedChunks!.isNotEmpty
-                ? () {
-                    setState(() {
-                      _lastQuery = _getQueryForMessage(index);
-                      _lastChunks = message.retrievedChunks!;
-                      _activeGraphMessageIndex = index;
-                      _showGraphPanel = true;
-                    });
-                  }
-                : null,
-          );
         }
+
+        return DocumentStyleResponse(
+          message: message,
+          showDebugInfo: _showDebugInfo,
+          shouldAnimate: index == 0 && !_isGenerating,
+        );
       },
     );
   }
 
+  String _displayCategoryLabel(NotebookCategoryModel category) {
+    if (category.collectionId == _notebook.defaultCollectionId) {
+      return 'Default (Upload Target)';
+    }
+    return category.title;
+  }
+
   @override
   void dispose() {
+    _persistSession();
     _messageController.dispose();
     _scrollController.dispose();
     _focusNode.dispose();
-    // Note: Don't dispose MobileRag here as it's a global singleton
-    // Only dispose when the entire app is closing
     super.dispose();
   }
 }

@@ -9,8 +9,8 @@ class AppConfig {
   static const String databaseName = 'local_gemma_rag.db';
 
   // Asset paths
-  static const String tokenizerAsset = 'assets/bge-m3-tokenizer.json';
-  static const String modelAsset = 'assets/bge-m3-int8.onnx';
+  static const String tokenizerAsset = 'assets/tokenizer.json';
+  static const String modelAsset = 'assets/model.onnx';
 
   // Ollama server configuration
   static const int ollamaStartupMaxRetries = 20;

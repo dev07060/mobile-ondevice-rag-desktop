@@ -1,6 +1,7 @@
 /// Query understanding service for RAG.
 /// Analyzes user intent, validates queries, and normalizes for consistent results.
 
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:ollama_dart/ollama_dart.dart';
@@ -65,6 +66,8 @@ class QueryUnderstanding {
 class QueryUnderstandingService {
   final OllamaClient ollamaClient;
   final String? modelName;
+
+  static const Duration _analysisTimeout = Duration(seconds: 20);
 
   QueryUnderstandingService({required this.ollamaClient, this.modelName});
 
@@ -184,13 +187,15 @@ JSON Format:
 }''';
 
     try {
-      final response = await ollamaClient.generateCompletion(
-        request: GenerateCompletionRequest(
-          model: modelName ?? 'gemma3:4b',
-          prompt: prompt,
-          options: const RequestOptions(temperature: 0.0, numPredict: 200),
-        ),
-      );
+      final response = await ollamaClient
+          .generateCompletion(
+            request: GenerateCompletionRequest(
+              model: modelName ?? 'gemma3:4b',
+              prompt: prompt,
+              options: const RequestOptions(temperature: 0.0, numPredict: 200),
+            ),
+          )
+          .timeout(_analysisTimeout);
 
       final responseText = response.response?.trim() ?? '';
       debugPrint('🤖 LLM Analysis Response: $responseText');

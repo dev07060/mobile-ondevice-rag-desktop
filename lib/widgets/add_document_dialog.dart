@@ -23,6 +23,7 @@ class AddDocumentResult {
 Future<AddDocumentResult?> showAddDocumentDialog({
   required BuildContext context,
   required DocumentAddService documentService,
+  required String collectionId,
 }) async {
   return showModalBottomSheet<AddDocumentResult>(
     context: context,
@@ -30,16 +31,23 @@ Future<AddDocumentResult?> showAddDocumentDialog({
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
     ),
-    builder: (context) =>
-        AddDocumentDialogContent(documentService: documentService),
+    builder: (context) => AddDocumentDialogContent(
+      documentService: documentService,
+      collectionId: collectionId,
+    ),
   );
 }
 
 /// Content of the add document dialog
 class AddDocumentDialogContent extends StatefulWidget {
   final DocumentAddService documentService;
+  final String collectionId;
 
-  const AddDocumentDialogContent({super.key, required this.documentService});
+  const AddDocumentDialogContent({
+    super.key,
+    required this.documentService,
+    required this.collectionId,
+  });
 
   @override
   State<AddDocumentDialogContent> createState() =>
@@ -50,6 +58,9 @@ class _AddDocumentDialogContentState extends State<AddDocumentDialogContent> {
   final _textController = TextEditingController();
   bool _isLoading = false;
   String? _error;
+  String _statusMessage = 'Ready';
+  int? _progressDone;
+  int? _progressTotal;
 
   @override
   void dispose() {
@@ -61,10 +72,16 @@ class _AddDocumentDialogContentState extends State<AddDocumentDialogContent> {
     setState(() {
       _isLoading = true;
       _error = null;
+      _statusMessage = 'Picking file...';
+      _progressDone = null;
+      _progressTotal = null;
     });
 
     try {
-      final result = await widget.documentService.pickAndAddFile();
+      final result = await widget.documentService.pickAndAddFile(
+        collectionId: widget.collectionId,
+        onProgress: _handleProgress,
+      );
 
       if (result == null) {
         // User cancelled
@@ -97,10 +114,17 @@ class _AddDocumentDialogContentState extends State<AddDocumentDialogContent> {
     setState(() {
       _isLoading = true;
       _error = null;
+      _statusMessage = 'Adding text document...';
+      _progressDone = null;
+      _progressTotal = null;
     });
 
     try {
-      final result = await widget.documentService.addTextDocument(text);
+      final result = await widget.documentService.addTextDocument(
+        text,
+        collectionId: widget.collectionId,
+        onProgress: _handleProgress,
+      );
 
       if (mounted) {
         Navigator.pop(
@@ -114,6 +138,22 @@ class _AddDocumentDialogContentState extends State<AddDocumentDialogContent> {
         _error = e.toString();
       });
     }
+  }
+
+  void _handleProgress(DocumentAddProgress progress) {
+    if (!mounted) return;
+    setState(() {
+      _statusMessage = progress.message;
+      _progressDone = progress.done;
+      _progressTotal = progress.total;
+    });
+  }
+
+  double? get _progressValue {
+    final done = _progressDone;
+    final total = _progressTotal;
+    if (done == null || total == null || total <= 0) return null;
+    return (done / total).clamp(0.0, 1.0);
   }
 
   @override
@@ -130,6 +170,16 @@ class _AddDocumentDialogContentState extends State<AddDocumentDialogContent> {
           children: [
             Text('Add Document', style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 16),
+
+            if (_isLoading) ...[
+              Text(
+                _statusMessage,
+                style: const TextStyle(fontSize: 13, color: Colors.black87),
+              ),
+              const SizedBox(height: 8),
+              LinearProgressIndicator(value: _progressValue),
+              const SizedBox(height: 12),
+            ],
 
             // Error message
             if (_error != null) ...[

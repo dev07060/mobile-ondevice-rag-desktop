@@ -11,16 +11,12 @@ import '../models/chat_models.dart';
 class DocumentStyleResponse extends StatefulWidget {
   final ChatMessage message;
   final bool showDebugInfo;
-  final VoidCallback? onViewGraph;
-  final bool isGraphActive;
   final bool shouldAnimate; // Whether to animate this message
 
   const DocumentStyleResponse({
     super.key,
     required this.message,
     this.showDebugInfo = false,
-    this.onViewGraph,
-    this.isGraphActive = false,
     this.shouldAnimate = false,
   });
 
@@ -114,10 +110,9 @@ class _DocumentStyleResponseState extends State<DocumentStyleResponse> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Source info and graph button row
+                // Source info row
                 Row(
                   children: [
-                    // Left: info chips
                     if (hasChunks)
                       Expanded(
                         child: Wrap(
@@ -137,39 +132,6 @@ class _DocumentStyleResponseState extends State<DocumentStyleResponse> {
                             if (bestSimilarity != null)
                               _buildSimilarityChip(bestSimilarity),
                           ],
-                        ),
-                      ),
-                    // Right: graph button
-                    if (hasChunks && widget.onViewGraph != null)
-                      Container(
-                        decoration: widget.isGraphActive
-                            ? BoxDecoration(
-                                color: Colors.purple.withValues(alpha: 0.2),
-                                borderRadius: BorderRadius.circular(6),
-                                border: Border.all(
-                                  color: Colors.purple.withValues(alpha: 0.5),
-                                ),
-                              )
-                            : null,
-                        child: IconButton(
-                          onPressed: widget.onViewGraph,
-                          icon: Icon(
-                            widget.isGraphActive
-                                ? Icons.hub
-                                : Icons.hub_outlined,
-                            size: 18,
-                            color: widget.isGraphActive
-                                ? Colors.purple
-                                : Colors.grey[500],
-                          ),
-                          tooltip: widget.isGraphActive
-                              ? 'Viewing in Graph'
-                              : 'View in Graph',
-                          padding: const EdgeInsets.all(4),
-                          constraints: const BoxConstraints(
-                            minWidth: 32,
-                            minHeight: 32,
-                          ),
                         ),
                       ),
                   ],

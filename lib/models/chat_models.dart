@@ -48,6 +48,8 @@ class ChatMessage {
   final DateTime timestamp;
   final List<ChunkSearchResult>? retrievedChunks;
   final int? tokensUsed;
+  final Map<int, List<String>>? relationTraceByChunkId;
+  final Map<int, double>? graphSignalByChunkId;
   final double? compressionRatio; // 0.0-1.0, lower = more compressed
   final int? originalTokens; // Before compression
 
@@ -71,6 +73,8 @@ class ChatMessage {
     DateTime? timestamp,
     this.retrievedChunks,
     this.tokensUsed,
+    this.relationTraceByChunkId,
+    this.graphSignalByChunkId,
     this.compressionRatio,
     this.originalTokens,
     this.queryType,
@@ -87,6 +91,8 @@ class ChatMessage {
     bool? isStreaming,
     List<ChunkSearchResult>? retrievedChunks,
     int? tokensUsed,
+    Map<int, List<String>>? relationTraceByChunkId,
+    Map<int, double>? graphSignalByChunkId,
     String? queryType,
     Duration? ragSearchTime,
     Duration? llmGenerationTime,
@@ -98,6 +104,9 @@ class ChatMessage {
       timestamp: timestamp,
       retrievedChunks: retrievedChunks ?? this.retrievedChunks,
       tokensUsed: tokensUsed ?? this.tokensUsed,
+      relationTraceByChunkId:
+          relationTraceByChunkId ?? this.relationTraceByChunkId,
+      graphSignalByChunkId: graphSignalByChunkId ?? this.graphSignalByChunkId,
       compressionRatio: compressionRatio,
       originalTokens: originalTokens,
       queryType: queryType ?? this.queryType,

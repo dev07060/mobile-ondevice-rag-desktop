@@ -5,10 +5,12 @@ import 'package:flutter/foundation.dart';
 import 'package:mobile_rag_engine/mobile_rag_engine.dart';
 import 'package:mobile_rag_engine/mobile_rag_engine.dart' as intent;
 import 'package:ollama_dart/ollama_dart.dart';
-import 'query_understanding_service.dart';
+import 'package:local_gemma_macos/widgets/slash_command_overlay.dart';
+
+import 'notebook_rag_service.dart';
 import 'ollama_response_service.dart';
 import 'query_intent_handler.dart';
-import 'package:local_gemma_macos/widgets/slash_command_overlay.dart';
+import 'query_understanding_service.dart';
 
 /// Result of processing a chat message
 class ChatProcessResult {
@@ -38,7 +40,7 @@ class ChatProcessResult {
   factory ChatProcessResult.rejected(String reason) {
     return ChatProcessResult(
       response: reason,
-      chunks: [],
+      chunks: const [],
       estimatedTokens: 0,
       queryType: 'rejected',
       ragSearchTime: Duration.zero,
@@ -69,6 +71,7 @@ class RagChatService {
   final OllamaClient ollamaClient;
   final QueryUnderstandingService queryService;
   final OllamaResponseService responseService;
+  final NotebookRagService notebookRagService;
   final List<Message> chatHistory;
 
   /// Minimum similarity threshold for filtering chunks
@@ -83,9 +86,11 @@ class RagChatService {
     required this.queryService,
     required this.responseService,
     required this.chatHistory,
+    NotebookRagService? notebookRagService,
     this.minSimilarityThreshold = 0.35,
     this.mockLlm = false,
-  });
+  }) : notebookRagService =
+           notebookRagService ?? NotebookRagService(ragEngine: ragEngine);
 
   /// Parse user input into intent
   ParsedMessageIntent parseIntent(
@@ -93,7 +98,6 @@ class RagChatService {
     SlashCommand? selectedCommand,
   }) {
     if (selectedCommand != null) {
-      // Intent from selected chip
       final intentType = switch (selectedCommand.command) {
         '/summary' => 'summary',
         '/define' => 'define',
@@ -113,7 +117,6 @@ class RagChatService {
       );
     }
 
-    // Parse from text input
     final parsedIntent = intent.parseIntent(input: text);
     return ParsedMessageIntent(
       parsed: parsedIntent,
@@ -123,24 +126,19 @@ class RagChatService {
   }
 
   /// Process a message and generate response
-  ///
-  /// [text] - Original user input
-  /// [parsedIntent] - Parsed intent from parseIntent()
-  /// [onToken] - Callback for streaming tokens (only for non-mock mode)
   Future<ChatProcessResult> processMessage(
     String text,
     ParsedMessageIntent parsedIntent, {
+    required List<String> collectionIds,
     ResponseLanguage language = ResponseLanguage.english,
     void Function(String token)? onToken,
   }) async {
     final totalStopwatch = Stopwatch()..start();
 
-    // === Stage 1: Query Understanding ===
     final understanding = await queryService.analyze(
       parsedIntent.effectiveQuery,
     );
 
-    // Reject invalid queries (only for general queries)
     if (!understanding.isValid && parsedIntent.parsed.intentType == 'general') {
       totalStopwatch.stop();
       return ChatProcessResult.rejected(
@@ -152,19 +150,16 @@ class RagChatService {
     debugPrint('   Normalized: "${understanding.normalizedQuery}"');
     debugPrint('   Keywords: ${understanding.keywords}');
 
-    // === Stage 2: Map to RAG parameters ===
     final intentConfig = QueryIntentHandler.getConfig(parsedIntent.parsed);
     final int adjacentChunks;
     final int tokenBudget;
     final int topK;
 
     if (parsedIntent.parsed.intentType != 'general') {
-      // Use slash command intent config
       adjacentChunks = intentConfig.adjacentChunks;
       tokenBudget = intentConfig.tokenBudget;
       topK = intentConfig.topK;
     } else {
-      // Use query type-based config
       (adjacentChunks, tokenBudget, topK) = switch (understanding.type) {
         QueryType.definition => (1, 1000, 5),
         QueryType.explanation => (2, 2500, 10),
@@ -180,63 +175,77 @@ class RagChatService {
       '📐 Using: type=${understanding.type.name}, adjacent=$adjacentChunks, budget=$tokenBudget, topK=$topK',
     );
 
-    // === Stage 3: RAG Search ===
     final ragStopwatch = Stopwatch()..start();
-    final ragResult = await ragEngine.search(
-      understanding.normalizedQuery,
+
+    final notebookResult = await notebookRagService.searchMerged(
+      query: understanding.normalizedQuery,
+      collectionIds: collectionIds,
       topK: topK,
       tokenBudget: tokenBudget,
       strategy: ContextStrategy.relevanceFirst,
       adjacentChunks: adjacentChunks,
       singleSourceMode: false,
+      useHybridWithContext: false,
     );
+
     ragStopwatch.stop();
     final ragSearchTime = ragStopwatch.elapsed;
 
-    // Debug log search results
-    debugPrint('🔍 BGE-m3 search for: "${understanding.normalizedQuery}"');
-    debugPrint('   Found ${ragResult.chunks.length} chunks');
-    for (var i = 0; i < ragResult.chunks.length && i < 5; i++) {
-      final c = ragResult.chunks[i];
+    debugPrint('🔍 BGE-m3 merged search for: "${understanding.normalizedQuery}"');
+    debugPrint(
+      '   Found ${notebookResult.chunks.length} chunks across ${collectionIds.length} collections',
+    );
+
+    for (var i = 0; i < notebookResult.chunks.length && i < 5; i++) {
+      final c = notebookResult.chunks[i];
       final preview = c.content.length > 50
           ? '${c.content.substring(0, 50)}...'
           : c.content;
       debugPrint('   [$i] sim=${c.similarity.toStringAsFixed(3)}: $preview');
     }
 
-    // Filter low similarity chunks
-    final relevantChunks = ragResult.chunks
-        .where(
-          (c) => c.similarity >= minSimilarityThreshold || c.similarity == 0.0,
-        )
-        .toList();
-
-    if (relevantChunks.length < ragResult.chunks.length) {
+    if (notebookResult.failedCollections.isNotEmpty) {
       debugPrint(
-        '   🧹 Filtered ${ragResult.chunks.length - relevantChunks.length} low similarity chunks (<$minSimilarityThreshold)',
+        '⚠️ Partial retrieval failure: ${notebookResult.failedCollections.join(', ')}',
+      );
+    }
+
+    final relevantChunks = notebookResult.chunks
+        .where(
+          (chunk) =>
+              chunk.similarity >= minSimilarityThreshold ||
+              chunk.similarity == 0,
+        )
+        .toList(growable: false);
+
+    if (relevantChunks.length < notebookResult.chunks.length) {
+      debugPrint(
+        '   🧹 Filtered ${notebookResult.chunks.length - relevantChunks.length} low similarity chunks (<$minSimilarityThreshold)',
       );
     }
 
     final hasRelevantContext = relevantChunks.isNotEmpty;
-    final contextText = ragResult.context.text;
-    final estimatedTokens = ragResult.context.estimatedTokens;
+    final contextText = hasRelevantContext ? notebookResult.contextText : '';
+    final estimatedTokens = notebookResult.estimatedTokens;
 
     debugPrint(
-      '📊 RAG Context: $estimatedTokens tokens, ${ragResult.chunks.length} chunks (Relevant: ${relevantChunks.length})',
+      '📊 RAG Context: $estimatedTokens tokens, ${notebookResult.chunks.length} chunks (Relevant: ${relevantChunks.length})',
     );
 
-    // === Stage 4: LLM Generation ===
     final llmStopwatch = Stopwatch()..start();
     String response;
 
     if (mockLlm) {
-      response = _generateMockResponse(ragResult);
+      response = _generateMockResponse(
+        chunks: notebookResult.chunks,
+        estimatedTokens: estimatedTokens,
+      );
     } else {
       response = await _generateOllamaResponse(
-        text,
-        hasRelevantContext ? contextText : '',
-        ragResult,
-        hasRelevantContext,
+        query: text,
+        contextText: contextText,
+        retrievedChunks: notebookResult.chunks,
+        hasRelevantContext: hasRelevantContext,
         language: language,
         onToken: onToken,
       );
@@ -247,7 +256,7 @@ class RagChatService {
 
     return ChatProcessResult(
       response: response,
-      chunks: ragResult.chunks,
+      chunks: notebookResult.chunks,
       estimatedTokens: estimatedTokens,
       queryType: understanding.type.name,
       ragSearchTime: ragSearchTime,
@@ -256,18 +265,20 @@ class RagChatService {
     );
   }
 
-  /// Generate mock response (for testing without LLM)
-  String _generateMockResponse(RagSearchResult ragResult) {
-    if (ragResult.chunks.isEmpty) {
+  String _generateMockResponse({
+    required List<ChunkSearchResult> chunks,
+    required int estimatedTokens,
+  }) {
+    if (chunks.isEmpty) {
       return '📭 No relevant documents found.\n\nPlease add some documents using the menu.';
     }
 
     final buffer = StringBuffer();
-    buffer.writeln('📚 Found ${ragResult.chunks.length} relevant chunks:');
-    buffer.writeln('📊 Using ~${ragResult.context.estimatedTokens} tokens\n');
+    buffer.writeln('📚 Found ${chunks.length} relevant chunks:');
+    buffer.writeln('📊 Using ~$estimatedTokens tokens\n');
 
-    for (var i = 0; i < ragResult.chunks.length && i < 3; i++) {
-      final chunk = ragResult.chunks[i];
+    for (var i = 0; i < chunks.length && i < 3; i++) {
+      final chunk = chunks[i];
       final preview = chunk.content.length > 100
           ? '${chunk.content.substring(0, 100)}...'
           : chunk.content;
@@ -282,19 +293,18 @@ class RagChatService {
     return buffer.toString();
   }
 
-  /// Generate response using Ollama with streaming
-  Future<String> _generateOllamaResponse(
-    String query,
-    String contextText,
-    RagSearchResult ragResult,
-    bool hasRelevantContext, {
-    ResponseLanguage language = ResponseLanguage.english,
+  Future<String> _generateOllamaResponse({
+    required String query,
+    required String contextText,
+    required List<ChunkSearchResult> retrievedChunks,
+    required bool hasRelevantContext,
+    required ResponseLanguage language,
     void Function(String token)? onToken,
   }) async {
     final result = await responseService.generateResponse(
       query: query,
       contextText: contextText,
-      ragResult: ragResult,
+      retrievedChunks: retrievedChunks,
       hasRelevantContext: hasRelevantContext,
       chatHistory: chatHistory,
       language: language,
@@ -305,7 +315,6 @@ class RagChatService {
     return result.response;
   }
 
-  /// Clear chat history for new session
   void clearHistory() {
     chatHistory.clear();
   }

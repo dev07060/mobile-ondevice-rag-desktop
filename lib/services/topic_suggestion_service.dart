@@ -31,6 +31,7 @@ class TopicSuggestionService {
   // Cached suggestions
   List<SuggestedQuestion>? _cachedSuggestions;
   DateTime? _cacheTime;
+  String? _cacheScopeKey;
 
   // Cache duration (regenerate if older than 1 hour)
   static const Duration _cacheDuration = Duration(hours: 1);
@@ -41,9 +42,15 @@ class TopicSuggestionService {
   // Minimum number of high-quality chunks needed
   static const int _minValidChunks = 2;
 
+  // Avoid suggestion spinner getting stuck forever.
+  static const Duration _suggestionLlmTimeout = Duration(seconds: 25);
+
   /// Get cached suggestions if available and not expired
-  List<SuggestedQuestion>? getCachedSuggestions() {
+  List<SuggestedQuestion>? getCachedSuggestions(String scopeKey) {
     if (_cachedSuggestions == null || _cacheTime == null) {
+      return null;
+    }
+    if (_cacheScopeKey != scopeKey) {
       return null;
     }
 
@@ -59,6 +66,7 @@ class TopicSuggestionService {
   void invalidateCache() {
     _cachedSuggestions = null;
     _cacheTime = null;
+    _cacheScopeKey = null;
     debugPrint('🔄 Topic suggestions cache invalidated');
   }
 
@@ -70,15 +78,28 @@ class TopicSuggestionService {
   /// 3. Uses LLM to extract topics and generate relevant questions
   /// 4. Validates each question with RAG search to ensure answerability
   Future<List<SuggestedQuestion>> generateSuggestions({
-    required SourceRagService ragService,
+    required RagEngine ragEngine,
+    required List<String> collectionIds,
     required OllamaClient ollamaClient,
     String? modelName,
     int maxSuggestions = 3,
     int sampleSize = 15,
     ResponseLanguage language = ResponseLanguage.english,
   }) async {
+    final normalizedCollectionIds = collectionIds
+        .map((id) => id.trim())
+        .where((id) => id.isNotEmpty)
+        .toSet()
+        .toList(growable: false);
+    if (normalizedCollectionIds.isEmpty) {
+      return [];
+    }
+
+    final scopeKey =
+        '${normalizedCollectionIds.join('|')}::${language.name}::${maxSuggestions}_$sampleSize';
+
     // Return cached if available
-    final cached = getCachedSuggestions();
+    final cached = getCachedSuggestions(scopeKey);
     if (cached != null && cached.isNotEmpty) {
       debugPrint('📋 Returning ${cached.length} cached suggestions');
       return cached;
@@ -89,14 +110,25 @@ class TopicSuggestionService {
 
     try {
       // 1. Get all chunks from database
-      final stats = await ragService.getStats();
-      if (stats.chunkCount == 0) {
+      final statsByCollection = await Future.wait(
+        normalizedCollectionIds.map(
+          (id) => ragEngine.getStats(collectionId: id),
+        ),
+      );
+      final totalChunks = statsByCollection.fold<int>(
+        0,
+        (sum, stats) => sum + stats.chunkCount.toInt(),
+      );
+      if (totalChunks == 0) {
         debugPrint('📭 No chunks in database, cannot generate suggestions');
         return [];
       }
 
       // 2. Get chunk contents for sampling
-      final allChunks = await getAllChunkIdsAndContents();
+      final allChunks = await _loadChunksForSampling(
+        ragEngine: ragEngine,
+        collectionIds: normalizedCollectionIds,
+      );
 
       if (allChunks.isEmpty) {
         debugPrint('📭 No chunk contents found');
@@ -126,7 +158,8 @@ class TopicSuggestionService {
       // 5. Validate each question with RAG search (Validation uses original query, so language doesn't matter for similarity check)
       final validatedSuggestions = await _validateQuestions(
         candidates: candidates,
-        ragService: ragService,
+        ragEngine: ragEngine,
+        collectionIds: normalizedCollectionIds,
         maxValid: maxSuggestions,
       );
 
@@ -138,6 +171,7 @@ class TopicSuggestionService {
       // 6. Cache results
       _cachedSuggestions = validatedSuggestions;
       _cacheTime = DateTime.now();
+      _cacheScopeKey = scopeKey;
 
       return validatedSuggestions;
     } catch (e, stackTrace) {
@@ -147,10 +181,43 @@ class TopicSuggestionService {
     }
   }
 
+  /// Load all chunks using public APIs only.
+  ///
+  /// `getAllChunkIdsAndContents()` is a low-level raw API and is not exported
+  /// by `mobile_rag_engine.dart`, so we compose equivalent data here.
+  Future<List<ChunkForReembedding>> _loadChunksForSampling({
+    required RagEngine ragEngine,
+    required List<String> collectionIds,
+  }) async {
+    final chunks = <ChunkForReembedding>[];
+    var syntheticChunkId = 1;
+
+    for (final collectionId in collectionIds) {
+      final sources = await ragEngine.listSources(collectionId: collectionId);
+      for (final source in sources) {
+        final sourceId = source.id.toInt();
+        final sourceChunks = await ragEngine.getSourceChunks(sourceId);
+
+        for (final content in sourceChunks) {
+          final trimmed = content.trim();
+          if (trimmed.isEmpty) continue;
+
+          chunks.add(
+            ChunkForReembedding(chunkId: syntheticChunkId, content: trimmed),
+          );
+          syntheticChunkId += 1;
+        }
+      }
+    }
+
+    return chunks;
+  }
+
   /// Validate questions using RAG search to ensure they can be answered
   Future<List<SuggestedQuestion>> _validateQuestions({
     required List<SuggestedQuestion> candidates,
-    required SourceRagService ragService,
+    required RagEngine ragEngine,
+    required List<String> collectionIds,
     required int maxValid,
   }) async {
     final validatedList = <SuggestedQuestion>[];
@@ -159,24 +226,41 @@ class TopicSuggestionService {
       if (validatedList.length >= maxValid) break;
 
       try {
-        // Run RAG search for the question
-        final result = await ragService.search(
-          candidate.question,
-          topK: 5,
-          tokenBudget: 500, // Small budget, we just need similarity scores
-          adjacentChunks: 0, // No adjacent chunks for validation
+        final resultsByCollection = await Future.wait(
+          collectionIds.map((collectionId) async {
+            try {
+              return await ragEngine.search(
+                candidate.question,
+                topK: 5,
+                tokenBudget: 500,
+                adjacentChunks: 0,
+                collectionId: collectionId,
+              );
+            } catch (_) {
+              return RagSearchResult(
+                chunks: [],
+                context: AssembledContext(
+                  text: '',
+                  includedChunks: [],
+                  estimatedTokens: 0,
+                  remainingBudget: 0,
+                ),
+              );
+            }
+          }),
         );
+        final allChunks = resultsByCollection
+            .expand((result) => result.chunks)
+            .toList(growable: false);
 
         // Count chunks with high similarity
-        final highQualityChunks = result.chunks
+        final highQualityChunks = allChunks
             .where((c) => c.similarity >= _validationThreshold)
             .length;
 
         // Get best similarity score
-        final bestScore = result.chunks.isNotEmpty
-            ? result.chunks
-                  .map((c) => c.similarity)
-                  .reduce((a, b) => a > b ? a : b)
+        final bestScore = allChunks.isNotEmpty
+            ? allChunks.map((c) => c.similarity).reduce((a, b) => a > b ? a : b)
             : 0.0;
 
         debugPrint(
@@ -302,16 +386,19 @@ Respond ONLY in JSON format:
     }
 
     try {
-      final response = await ollamaClient.generateCompletion(
-        request: GenerateCompletionRequest(
-          model: modelName ?? 'gemma3:4b',
-          prompt: prompt,
-          options: const RequestOptions(
-            temperature: 0.5, // Lower temperature for more grounded questions
-            numPredict: 800, // More tokens for more questions
-          ),
-        ),
-      );
+      final response = await ollamaClient
+          .generateCompletion(
+            request: GenerateCompletionRequest(
+              model: modelName ?? 'gemma3:4b',
+              prompt: prompt,
+              options: const RequestOptions(
+                temperature:
+                    0.5, // Lower temperature for more grounded questions
+                numPredict: 800, // More tokens for more questions
+              ),
+            ),
+          )
+          .timeout(_suggestionLlmTimeout);
 
       final responseText = response.response?.trim() ?? '';
       debugPrint('🤖 LLM response: $responseText');

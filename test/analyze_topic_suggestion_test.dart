@@ -28,11 +28,19 @@ void main() async {
 
   debugPrint('📁 Using DB: $dbPath\n');
 
+  final ragService = SourceRagService(
+    dbPath: dbPath,
+    maxChunkChars: 500,
+    overlapChars: 50,
+  );
+  await ragService.init();
+  debugPrint('✅ RAG service initialized\n');
+
   // 1. Get all chunks from database
   debugPrint('📚 STEP 1: Loading all chunks from database...');
   debugPrint('-' * 50);
 
-  final allChunks = await getAllChunkIdsAndContents();
+  final allChunks = await _loadAllChunksFromService(ragService);
   debugPrint('   Total chunks: ${allChunks.length}');
 
   if (allChunks.isEmpty) {
@@ -137,11 +145,10 @@ JSON 형식으로만 응답하세요:
     debugPrint('\n🔍 STEP 4: Validating questions with RAG search...');
     debugPrint('-' * 50);
 
-    // Initialize RAG engine using MobileRag (handles tokenizer automatically)
-    debugPrint('   🔄 Initializing RAG engine...');
-    final modelPath = '${Directory.current.path}/assets/bge-m3-int8.onnx';
-    final tokenizerPath =
-        '${Directory.current.path}/assets/bge-m3-tokenizer.json';
+    // Check model/tokenizer files for validation search path
+    debugPrint('   🔄 Checking RAG runtime assets...');
+    final modelPath = '${Directory.current.path}/assets/model.onnx';
+    final tokenizerPath = '${Directory.current.path}/assets/tokenizer.json';
 
     if (!File(modelPath).existsSync() || !File(tokenizerPath).existsSync()) {
       debugPrint('   ❌ Model or tokenizer not found');
@@ -150,16 +157,6 @@ JSON 형식으로만 응답하세요:
       debugPrint('   Skipping validation...');
       return;
     }
-
-    // Note: In a real test, you'd use MobileRag.initialize() but since we're
-    // using a custom DB path, we'll use the low-level API
-    final ragService = SourceRagService(
-      dbPath: dbPath,
-      maxChunkChars: 500,
-      overlapChars: 50,
-    );
-    await ragService.init();
-    debugPrint('   ✅ RAG service initialized');
 
     // Validate each question
     for (final q in questions) {
@@ -243,6 +240,30 @@ JSON 형식으로만 응답하세요:
   debugPrint('\n${'=' * 70}');
   debugPrint('📊 ANALYSIS COMPLETE');
   debugPrint('=' * 70);
+}
+
+Future<List<ChunkForReembedding>> _loadAllChunksFromService(
+  SourceRagService ragService,
+) async {
+  final sources = await ragService.listSources();
+  final chunks = <ChunkForReembedding>[];
+  var syntheticChunkId = 1;
+
+  for (final source in sources) {
+    final sourceChunks = await ragService.getSourceChunks(
+      sourceId: source.id.toInt(),
+    );
+    for (final content in sourceChunks) {
+      final trimmed = content.trim();
+      if (trimmed.isEmpty) continue;
+      chunks.add(
+        ChunkForReembedding(chunkId: syntheticChunkId, content: trimmed),
+      );
+      syntheticChunkId += 1;
+    }
+  }
+
+  return chunks;
 }
 
 /// Sample chunks (same logic as TopicSuggestionService)

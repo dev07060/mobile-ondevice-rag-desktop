@@ -283,10 +283,11 @@ packages:
   mobile_rag_engine:
     dependency: "direct main"
     description:
-      path: "../../pub_package/mobile_rag_engine"
-      relative: true
-    source: path
-    version: "0.9.2"
+      name: mobile_rag_engine
+      sha256: "6308164c9a4174042693f3c07b1d68789b55f907fd6775ca55c0c8dba8f2a078"
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.14.3"
   nested:
     dependency: transitive
     description:
@@ -411,10 +412,10 @@ packages:
     dependency: transitive
     description:
       name: rag_engine_flutter
-      sha256: d89187834d25789a11b3b93f34152e103ab05fe7497f4468826a0383a034a722
+      sha256: "67f29dbc730a8c9a2a94072685b5355cb2e76a1be53bef21925ce6a4352c11b8"
       url: "https://pub.dev"
     source: hosted
-    version: "0.9.0"
+    version: "0.14.1"
   scrollable_positioned_list:
     dependency: "direct main"
     description:

@@ -7,8 +7,10 @@ import 'package:mobile_rag_engine/mobile_rag_engine.dart';
 import 'package:path_provider/path_provider.dart';
 import 'config/app_config.dart';
 import 'screens/model_setup_screen.dart';
+import 'screens/notebook_home_screen.dart';
 import 'screens/onboarding_screen.dart';
-import 'screens/rag_chat_screen.dart';
+import 'services/notebook_chat_session_store.dart';
+import 'services/notebook_repository.dart';
 import 'services/ollama_server_manager.dart';
 import 'services/ollama_status_service.dart';
 import 'widgets/home_app_bar.dart';
@@ -23,7 +25,8 @@ Future<void> main() async {
     tokenizerAsset: AppConfig.tokenizerAsset,
     modelAsset: AppConfig.modelAsset,
     databaseName: AppConfig.databaseName,
-    threadLevel: ThreadUseLevel.high,
+    threadLevel: ThreadUseLevel.medium,
+    deferIndexWarmup: true,
   );
 
   runApp(const LocalGemmaApp());
@@ -90,10 +93,13 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   bool _isOllamaConnected = false;
   bool _hasModel = false;
+  bool _mockMode = false;
   bool _isChecking = true;
   String? _statusMessage;
   String? _selectedModel;
   final OllamaStatusService _statusService = OllamaStatusService();
+  final NotebookRepository _notebookRepository = NotebookRepository();
+  final NotebookChatSessionStore _sessionStore = NotebookChatSessionStore();
 
   @override
   void initState() {
@@ -132,6 +138,7 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _isOllamaConnected = status.isConnected;
       _hasModel = status.hasModel;
+      _mockMode = false;
       _selectedModel = status.selectedModel;
       _isChecking = false;
       _statusMessage = status.errorMessage;
@@ -144,6 +151,17 @@ class _HomeScreenState extends State<HomeScreen> {
       return LoadingScreen(statusMessage: _statusMessage);
     }
 
+    if (_isOllamaConnected && _hasModel) {
+      return Scaffold(
+        appBar: HomeAppBar(onMenuAction: _handleMenuAction),
+        body: NotebookHomeScreen(
+          modelName: _selectedModel,
+          sessionStore: _sessionStore,
+          mockLlm: _mockMode,
+        ),
+      );
+    }
+
     return Scaffold(
       appBar: HomeAppBar(onMenuAction: _handleMenuAction),
       body: OnboardingScreen(
@@ -151,12 +169,7 @@ class _HomeScreenState extends State<HomeScreen> {
         hasModel: _hasModel,
         selectedModel: _selectedModel,
         onStartChat: () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => RagChatScreen(modelName: _selectedModel!),
-            ),
-          );
+          _checkOllamaStatus();
         },
         onDownloadModel: () async {
           final result = await Navigator.push<String>(
@@ -171,12 +184,12 @@ class _HomeScreenState extends State<HomeScreen> {
           }
         },
         onSkip: () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => const RagChatScreen(mockLlm: true),
-            ),
-          );
+          setState(() {
+            _isOllamaConnected = true;
+            _hasModel = true;
+            _mockMode = true;
+            _selectedModel = null;
+          });
         },
         onRetryConnection: _initializeOllama,
       ),
@@ -251,7 +264,11 @@ class _HomeScreenState extends State<HomeScreen> {
           tokenizerAsset: AppConfig.tokenizerAsset,
           modelAsset: AppConfig.modelAsset,
           databaseName: AppConfig.databaseName,
+          deferIndexWarmup: true,
         );
+
+        await _notebookRepository.resetToDefaultStore();
+        _sessionStore.clearAll();
 
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -273,6 +290,7 @@ class _HomeScreenState extends State<HomeScreen> {
               tokenizerAsset: AppConfig.tokenizerAsset,
               modelAsset: AppConfig.modelAsset,
               databaseName: AppConfig.databaseName,
+              deferIndexWarmup: true,
             );
           }
         } catch (reInitError) {
@@ -290,6 +308,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (result != null) {
       setState(() {
         _hasModel = true;
+        _mockMode = false;
         _selectedModel = result;
       });
     }

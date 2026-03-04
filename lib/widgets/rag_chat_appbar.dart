@@ -1,5 +1,5 @@
 /// Custom AppBar widget for RAG Chat screen.
-/// Contains graph toggle, debug toggle, and settings menu.
+/// Contains evidence panel toggle, debug toggle, and settings menu.
 
 import 'package:flutter/material.dart';
 import 'package:local_gemma_macos/services/ollama_response_service.dart';
@@ -16,6 +16,7 @@ enum RagChatMenuAction {
 
 /// AppBar for RAG Chat screen with settings and toggles
 class RagChatAppBar extends StatelessWidget implements PreferredSizeWidget {
+  final String title;
   final bool showGraphPanel;
   final bool showDebugInfo;
   final ResponseLanguage language;
@@ -26,6 +27,7 @@ class RagChatAppBar extends StatelessWidget implements PreferredSizeWidget {
 
   const RagChatAppBar({
     super.key,
+    this.title = 'RAG Chat',
     required this.showGraphPanel,
     required this.showDebugInfo,
     required this.language,
@@ -42,17 +44,17 @@ class RagChatAppBar extends StatelessWidget implements PreferredSizeWidget {
   Widget build(BuildContext context) {
     return AppBar(
       backgroundColor: const Color(0xFF1A1A1A),
-      title: const Text('RAG Chat', style: TextStyle(color: Colors.white)),
+      title: Text(title, style: const TextStyle(color: Colors.white)),
       centerTitle: true,
       iconTheme: const IconThemeData(color: Colors.white),
       actions: [
         // Graph panel toggle
         IconButton(
           icon: Icon(
-            showGraphPanel ? Icons.hub : Icons.hub_outlined,
-            color: showGraphPanel ? Colors.purple : Colors.grey,
+            showGraphPanel ? Icons.account_tree : Icons.account_tree_outlined,
+            color: showGraphPanel ? Colors.lightBlueAccent : Colors.grey,
           ),
-          tooltip: 'Toggle Knowledge Graph',
+          tooltip: 'Toggle Evidence Panel',
           onPressed: onToggleGraph,
         ),
         // Debug info toggle

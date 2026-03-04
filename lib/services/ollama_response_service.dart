@@ -1,6 +1,8 @@
 /// Service for generating LLM responses with RAG context.
 /// Handles response mode selection (strict/hybrid/fallback) and prompt construction.
 
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:mobile_rag_engine/mobile_rag_engine.dart';
 import 'package:ollama_dart/ollama_dart.dart';
@@ -33,9 +35,13 @@ class OllamaResponseService {
   final OllamaClient ollamaClient;
   final String modelName;
 
+  // Prevent indefinite waits when Ollama stalls.
+  static const Duration _streamChunkTimeout = Duration(seconds: 30);
+  static const Duration _streamMaxDuration = Duration(minutes: 2);
+
   // Thresholds for response mode selection
   static const double hybridThreshold = 0.5;
-  static const double strictThreshold = 0.7;
+  static const double strictThreshold = 0.82;
 
   OllamaResponseService({
     required this.ollamaClient,
@@ -48,15 +54,20 @@ class OllamaResponseService {
   Future<OllamaResponseResult> generateResponse({
     required String query,
     required String contextText,
-    required RagSearchResult ragResult,
+    required List<ChunkSearchResult> retrievedChunks,
     required bool hasRelevantContext,
     required List<Message> chatHistory,
     ResponseLanguage language = ResponseLanguage.english,
     void Function(Message)? onHistoryUpdate,
     void Function(String token)? onToken,
   }) async {
+    final effectiveLanguage =
+        language == ResponseLanguage.english && _looksKorean(query)
+        ? ResponseLanguage.korean
+        : language;
+
     // Calculate best similarity score for mode decision
-    final bestSimilarity = _calculateBestSimilarity(ragResult);
+    final bestSimilarity = _calculateBestSimilarity(retrievedChunks);
 
     // Determine response mode
     final mode = _determineResponseMode(hasRelevantContext, bestSimilarity);
@@ -71,14 +82,19 @@ class OllamaResponseService {
       final messages = <Message>[];
 
       // 1. System Prompt - varies by mode and language
-      messages.add(_buildSystemPrompt(mode, language));
+      messages.add(_buildSystemPrompt(mode, effectiveLanguage));
 
       // 2. Chat History (last 6 messages)
       final historyStart = chatHistory.length > 6 ? chatHistory.length - 6 : 0;
       messages.addAll(chatHistory.sublist(historyStart));
 
       // 3. Current User Message (WITH RAG CONTEXT)
-      final userMessage = _buildUserMessage(query, contextText, mode, language);
+      final userMessage = _buildUserMessage(
+        query,
+        contextText,
+        mode,
+        effectiveLanguage,
+      );
       messages.add(Message(role: MessageRole.user, content: userMessage));
 
       // Save raw query to history (not the huge context prompt)
@@ -91,7 +107,7 @@ class OllamaResponseService {
       debugPrint('📨 User Query: $query');
       debugPrint('📨 Context Length: ${contextText.length} chars');
       debugPrint('📨 Mode: ${mode.name}');
-      debugPrint('📨 Language: ${language.name}');
+      debugPrint('📨 Language: ${effectiveLanguage.name}');
 
       // Stream response from Ollama
       final responseBuffer = StringBuffer();
@@ -105,10 +121,31 @@ class OllamaResponseService {
         request: GenerateChatCompletionRequest(
           model: modelName,
           messages: messages,
+          options: const RequestOptions(
+            temperature: 0.15,
+            topP: 0.9,
+            repeatPenalty: 1.1,
+            numPredict: 700,
+          ),
         ),
       );
 
-      await for (final chunk in stream) {
+      final iterator = StreamIterator(stream);
+      final streamStopwatch = Stopwatch()..start();
+
+      while (await iterator.moveNext().timeout(
+        _streamChunkTimeout,
+        onTimeout: () => throw TimeoutException(
+          'LLM stream stalled for ${_streamChunkTimeout.inSeconds}s',
+        ),
+      )) {
+        if (streamStopwatch.elapsed > _streamMaxDuration) {
+          throw TimeoutException(
+            'LLM response exceeded ${_streamMaxDuration.inMinutes} minutes',
+          );
+        }
+
+        final chunk = iterator.current;
         final content = chunk.message.content;
         responseBuffer.write(content);
         chunkCount++;
@@ -141,6 +178,7 @@ class OllamaResponseService {
           }
         }
       }
+      await iterator.cancel();
 
       debugPrint('📝 === LLM Streaming End ($chunkCount chunks) ===');
 
@@ -187,10 +225,10 @@ class OllamaResponseService {
   }
 
   /// Calculate best similarity score from RAG results
-  double _calculateBestSimilarity(RagSearchResult ragResult) {
-    if (ragResult.chunks.isEmpty) return 0.0;
+  double _calculateBestSimilarity(List<ChunkSearchResult> chunks) {
+    if (chunks.isEmpty) return 0.0;
 
-    return ragResult.chunks
+    return chunks
         .map((c) => c.similarity)
         .where((s) => s > 0) // Exclude adjacent chunks with 0.0
         .fold(0.0, (a, b) => a > b ? a : b);
@@ -221,16 +259,17 @@ class OllamaResponseService {
         return const Message(
           role: MessageRole.system,
           content:
-              'You are an AI assistant that answers accurately based on the provided context. '
-              'Prioritize information from the context in your answers.',
+              'You are an AI assistant that answers from the provided context first. '
+              'Do not invent facts. If evidence is insufficient, say it clearly. '
+              'When the question asks for numbers, extract exact values from the context.',
         );
       case ResponseMode.hybrid:
         return const Message(
           role: MessageRole.system,
           content:
-              'You are an AI assistant that combines the provided context with general knowledge. '
-              'Prioritize context information, but supplement with general knowledge when needed. '
-              'Clearly distinguish between information from the context and general knowledge.',
+              'You are an AI assistant that combines context with general knowledge. '
+              'Prioritize context first. If you add external knowledge, label it explicitly. '
+              'Avoid unsupported claims and keep the answer concrete.',
         );
       case ResponseMode.fallback:
         return const Message(
@@ -246,8 +285,9 @@ class OllamaResponseService {
         return const Message(
           role: MessageRole.system,
           content:
-              '당신은 제공된 문맥을 바탕으로 정확하게 답변하는 AI 어시스턴트입니다. '
-              '답변 시 제공된 문서의 내용을 최우선으로 참고하세요. 한국어로 답변해주세요.',
+              '당신은 제공된 문맥을 우선으로 답변하는 AI 어시스턴트입니다. '
+              '근거가 부족하면 명확히 알리고 추측하지 마세요. '
+              '숫자/수치 질문은 문맥의 값을 정확히 추출해 답변하세요.',
         );
       case ResponseMode.hybrid:
         return const Message(
@@ -255,7 +295,8 @@ class OllamaResponseService {
           content:
               '당신은 제공된 문맥과 일반 지식을 조합하여 답변하는 AI 어시스턴트입니다. '
               '문서의 정보를 우선시하되, 필요한 경우 일반 지식을 보충하여 설명하세요. '
-              '문서에서 찾은 내용과 일반 지식을 구분하여 답변해주세요. 한국어로 답변해주세요.',
+              '문서 근거와 일반 지식을 반드시 구분해서 작성하세요. '
+              '근거 없는 단정은 피하고 한국어로 답변해주세요.',
         );
       case ResponseMode.fallback:
         return const Message(
@@ -291,6 +332,7 @@ $contextText
 [End of Reference Documents]
 
 Based on the content above, please answer the following question.
+If the question asks for specific numbers, provide exact values found in the context.
 
 Question: $query''';
 
@@ -328,6 +370,7 @@ $contextText
 [참고 문서 끝]
 
 위 내용을 바탕으로 다음 질문에 대해 답변해주세요.
+숫자/수치 질문이라면 문맥에서 확인되는 값을 정확히 적어주세요.
 
 질문: $query''';
 
@@ -351,4 +394,6 @@ $contextText
 일반 지식을 바탕으로 답변해주시고, 더 정확한 정보가 필요하다면 관련 문서를 추가하도록 안내해주세요.''';
     }
   }
+
+  bool _looksKorean(String text) => RegExp(r'[가-힣]').hasMatch(text);
 }
